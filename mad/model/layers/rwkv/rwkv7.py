@@ -130,8 +130,6 @@ def time_mixer_rwkv7_wrapped_bf16(
             N = self.head_size
             C = dim
 
-            # Initialize v_first as a buffer instead of requiring it as a parameter
-            self.register_buffer("v_first", None, persistent=False)
 
             with torch.no_grad():
                 ratio_0_to_1 = layer_id / (n_layer - 1) if n_layer > 1 else 0  # 0 to 1
@@ -240,8 +238,7 @@ def time_mixer_rwkv7_wrapped_bf16(
             return r, w, k, v, kk, a, g, xv
 
         @MyFunction
-        def forward(self, x):
-            """Forward pass that handles v_first internally"""
+        def forward(self, x, v_first=None):
             B, T, C = x.size()
             H = self.n_head
             orig_shape = (B, T, C)
@@ -250,9 +247,9 @@ def time_mixer_rwkv7_wrapped_bf16(
             r, w, k, v, kk, a, g, xv = self._process_inputs(x)
             
             if self.layer_id == 0:
-                self.v_first = v.clone().detach()
-            elif self.v_first is not None:
-                v = v + (self.v_first - v) * torch.sigmoid(self.v0 + (xv @ self.v1) @ self.v2)  # add value residual
+                v_first = v.clone()
+            elif v_first is not None:
+                v = v + (v_first - v) * torch.sigmoid(self.v0 + (xv @ self.v1) @ self.v2)  # add value residual
             
             # Convert to bfloat16 for CUDA kernel
             r = r.to(torch.bfloat16)
@@ -280,7 +277,7 @@ def time_mixer_rwkv7_wrapped_bf16(
             
             # Final output
             x = self.output(x * g)
-            return x
+            return x, v_first
 
     class ChannelMixer_RWKV7(MyModule):
         def __init__(self,
@@ -308,13 +305,13 @@ def time_mixer_rwkv7_wrapped_bf16(
             self.value.weight.data.zero_()
     
         @MyFunction
-        def forward(self, x):
+        def forward(self, x, v_first=None):
             xx = self.time_shift(x) - x
             
             k = x + xx * self.x_k
             k = torch.relu(self.key(k)) ** 2
             
-            return self.value(k)
+            return self.value(k), v_first
 
     # Finally return the time mixer
     return TimeMixer_RWKV7(
@@ -378,13 +375,13 @@ def channel_mixer_rwkv7_wrapped(
             self.value.weight.data.zero_()
 
         @MyFunction
-        def forward(self, x):
+        def forward(self, x, v_first=None):
             xx = self.time_shift(x) - x
             
             k = x + xx * self.x_k
             k = torch.relu(self.key(k)) ** 2
             
-            return self.value(k)
+            return self.value(k), v_first
 
     return ChannelMixer_RWKV7(
         dim=dim,
@@ -399,5 +396,5 @@ if __name__ == '__main__':
     x = torch.randn(2, 128, 128).cuda().to(torch.bfloat16)
     cmixer = channel_mixer_rwkv7_wrapped().cuda().to(torch.bfloat16)
     tmixer = time_mixer_rwkv7_wrapped_bf16().cuda().to(torch.bfloat16)
-    y1 = tmixer(x)
-    y2 = cmixer(y1)
+    y1, v_first = tmixer(x)
+    y2, _ = cmixer(y1, v_first)

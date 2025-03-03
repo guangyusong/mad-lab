@@ -66,8 +66,23 @@ class LanguageModel(nn.Module):
     
     def forward(self, inputs_ids: torch.Tensor) -> torch.Tensor:
         x = self.embed(inputs_ids)
+        
+        # RWKV-7 requires v_first
+        v_first = None
         for layer in self.model:
-            x = x + layer(x)
+            if hasattr(layer[1], 'layer_id') and hasattr(layer[1], 'forward'):
+                x_norm = layer[0](x) 
+                
+                result = layer[1](x_norm, v_first)
+                
+                if isinstance(result, tuple) and len(result) == 2:
+                    layer_output, v_first = result
+                    x = x + layer_output
+                else:
+                    x = x + result
+            else:
+                x = x + layer(x)
+                
         return self.unembed(x)
 
     def _init_weights(self, m, initializer_range=0.02) -> None:

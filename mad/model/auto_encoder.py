@@ -96,8 +96,21 @@ class AutoEncoder(nn.Module):
         if self.global_pool == 'cls':
             x = torch.cat([x, self.cls_token.expand(batch_size, -1, -1)], dim=1)
         
+        # RWKV-7 requires v_first
+        v_first = None
         for layer in self.encoder:
-            x = x + layer(x)
+            if hasattr(layer[1], 'layer_id') and hasattr(layer[1], 'forward'):
+                x_norm = layer[0](x)
+                
+                result = layer[1](x_norm, v_first)
+                
+                if isinstance(result, tuple) and len(result) == 2:
+                    layer_output, v_first = result
+                    x = x + layer_output
+                else:
+                    x = x + result
+            else:
+                x = x + layer(x)
         
         if self.global_pool == 'avg':
             x = x.mean(dim=1)
