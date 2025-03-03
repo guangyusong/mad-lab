@@ -1,0 +1,6 @@
+dim: 128
+max_length: 1280
+head_dim: 64
+dim_att: 128
+head_dim_divisor: 8
+chunk_len: 16

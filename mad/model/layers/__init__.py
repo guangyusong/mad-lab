@@ -2,6 +2,7 @@
 from mad.model.layers.mlp import Mlp, SwiGLU, MoeMlp
 from mad.model.layers.rwkv import channel_mixer_rwkv5_wrapped
 from mad.model.layers.rwkv import channel_mixer_rwkv6_wrapped
+from mad.model.layers.rwkv import channel_mixer_rwkv7_wrapped
 # sequence mixers:
 from mad.model.layers.attention import Attention
 from mad.model.layers.attention_linear import LinearAttention
@@ -10,3 +11,4 @@ from mad.model.layers.hyena import HyenaOperator, MultiHeadHyenaOperator, HyenaE
 from mad.model.layers.mamba import Mamba
 from mad.model.layers.rwkv import time_mixer_rwkv5_wrapped_bf16
 from mad.model.layers.rwkv import time_mixer_rwkv6_wrapped_bf16
+from mad.model.layers.rwkv import time_mixer_rwkv7_wrapped_bf16

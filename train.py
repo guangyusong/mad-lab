@@ -9,8 +9,12 @@ import pandas as pd
 import pytorch_lightning as pl
 
 from torch.utils.data import DataLoader
+from torch.serialization import add_safe_globals
 
 from mad.configs import MADConfig, MADModelConfig
+
+# Add MADConfig to PyTorch's safe globals list to allow loading it with weights_only=True
+add_safe_globals([MADConfig])
 from mad.paths import make_log_path
 from mad.data import generate_data
 from mad.model import PLModelWrap
@@ -50,11 +54,22 @@ def get_args():
     parser.add_argument('--accelerator', type=str, default='cuda', help='accelerator used for training')
     parser.add_argument('--devices', type=int, default=1, help='number of devices to use for training')
     parser.add_argument('--precision', type=str, default='bf16', help='precision of the model (see PyTorch Lightning Trainer docs for details)')
+    
+    # distributed training settings:
+    parser.add_argument('--use-deepspeed', action=argparse.BooleanOptionalAction, default=False, help='if True, enables DeepSpeed for distributed training')
+    parser.add_argument('--zero-stage', type=int, default=2, choices=[0, 1, 2, 3], help='ZeRO stage for DeepSpeed (RWKV-7 uses stage 2)')
+    parser.add_argument('--offload-optimizer', action=argparse.BooleanOptionalAction, default=False, help='if True, offloads optimizer states to CPU')
+    parser.add_argument('--offload-parameters', action=argparse.BooleanOptionalAction, default=False, help='if True, offloads parameters to CPU')
 
     # optimizer settings:
     parser.add_argument('--lr', type=float, default=5e-4, help='learning rate for optimizer')
     parser.add_argument('--min-lr', type=float, default=1e-6, help='minimum learning rate for cosine learning rate scheduler')
     parser.add_argument('--weight-decay', type=float, default=0., help='weight decay for optimizer')
+    parser.add_argument('--optimizer-eps', type=float, default=1e-18, help='epsilon parameter for Adam-based optimizers (RWKV-7 uses a smaller value)')
+    parser.add_argument('--use-param-grouping', action=argparse.BooleanOptionalAction, default=True, help='if True, uses parameter grouping for optimizer (RWKV-7 specific)')
+    parser.add_argument('--layerwise-lr', type=float, default=1.0, help='if > 0, specific parameters like att.w0 get 2x learning rate (RWKV-7 specific)')
+    parser.add_argument('--beta1', type=float, default=0.9, help='beta1 for Adam optimizer')
+    parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
 
     # logging: 
     parser.add_argument('--log-base-path', type=str, default='./logs', help='path where training logs are stored')
@@ -213,16 +228,51 @@ def train(
     torch.set_float32_matmul_precision('high')
 
     # Make Trainer.
-
-    trainer = pl.Trainer(
-        max_epochs=mad_config.epochs,
-        accelerator=mad_config.accelerator if torch.cuda.is_available() else 'cpu',
-        devices=mad_config.devices,
-        logger=loggers,
-        enable_checkpointing=mad_config.save_checkpoints,
-        callbacks=callbacks,
-        precision=mad_config.precision,
-    )
+    
+    trainer_kwargs = {
+        'max_epochs': mad_config.epochs,
+        'accelerator': mad_config.accelerator if torch.cuda.is_available() else 'cpu',
+        'devices': mad_config.devices,
+        'logger': loggers,
+        'enable_checkpointing': mad_config.save_checkpoints,
+        'callbacks': callbacks,
+        'precision': mad_config.precision,
+    }
+    
+    # Add DeepSpeed strategy if requested (RWKV-7 uses ZeRO stage 2)
+    if mad_config.use_deepspeed:
+        # Import is delayed to avoid dependencies when not using DeepSpeed
+        from pytorch_lightning.strategies import DeepSpeedStrategy
+        
+        # Configure ZeRO optimization
+        zero_config = {
+            "stage": mad_config.zero_stage,
+            "offload_optimizer": mad_config.offload_optimizer,
+            "offload_parameters": mad_config.offload_parameters,
+            "contiguous_gradients": True,
+            "overlap_comm": True
+        }
+        
+        # Configure optimizer settings for DeepSpeed (keeping the small epsilon)
+        ds_config = {
+            "optimizer": {
+                "type": "AdamW",
+                "params": {
+                    "lr": mad_config.lr,
+                    "betas": [mad_config.beta1, mad_config.beta2],
+                    "eps": mad_config.optimizer_eps,
+                    "weight_decay": mad_config.weight_decay
+                }
+            },
+            "zero_optimization": zero_config
+        }
+        
+        # Add DeepSpeed strategy to trainer kwargs
+        trainer_kwargs['strategy'] = DeepSpeedStrategy(config=ds_config)
+        
+        print(f"Using DeepSpeed with ZeRO Stage {mad_config.zero_stage}")
+        
+    trainer = pl.Trainer(**trainer_kwargs)
 
     # Train.
 

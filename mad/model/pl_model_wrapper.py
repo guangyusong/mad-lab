@@ -94,12 +94,92 @@ class PLModelWrap(pl.LightningModule):
 
     def configure_optimizers(self) -> tp.Union[torch.optim.Optimizer, tp.Dict[str, tp.Any]]:
         # optimizer:
+        # Get optimizer parameters from config
+        optimizer_eps = getattr(self.mad_config, 'optimizer_eps', 1e-18) 
+        beta1 = getattr(self.mad_config, 'beta1', 0.9)
+        beta2 = getattr(self.mad_config, 'beta2', 0.999)
+        use_param_grouping = getattr(self.mad_config, 'use_param_grouping', True)
+        
         if self.mad_config.optimizer == 'adamw':
-            optimizer = torch.optim.AdamW(
-                self.parameters(),
-                lr=self.mad_config.lr,
-                weight_decay=self.mad_config.weight_decay
-            )
+            if use_param_grouping:
+                # RWKV-7 style parameter grouping
+                # ENHANCED: More sophisticated parameter grouping like canonical RWKV-7
+                lr_1x = []   # base learning rate
+                lr_2x = []   # 2x learning rate
+                lr_3x = []   # 3x learning rate
+                lr_decay = [] # weight decay group
+                
+                # Get model dimension parameter to use as threshold
+                model_dim = 0
+                for name, param in self.named_parameters():
+                    if 'embedding' in name and 'weight' in name:
+                        model_dim = param.shape[1]
+                        break
+                
+                if model_dim == 0:
+                    for name, param in self.named_parameters():
+                        if len(param.shape) >= 2:
+                            model_dim = max(model_dim, param.shape[1])
+                
+                for name, param in self.named_parameters():
+                    if not hasattr(self.mad_config, 'layerwise_lr') or self.mad_config.layerwise_lr <= 0:
+                        # If layerwise_lr not enabled, everything goes to lr_1x except weight decay candidates
+                        if len(param.shape) >= 2 and 'weight' in name and self.mad_config.weight_decay > 0:
+                            lr_decay.append(name)
+                        else:
+                            lr_1x.append(name)
+                    else:
+                        if ("_w1" in name) or ("_w2" in name):
+                            lr_1x.append(name)
+                        elif len(param.shape) >= 2 and 'weight' in name and self.mad_config.weight_decay > 0:
+                            lr_decay.append(name)
+                        elif ("time_mix" in name) or ("time_maa" in name):
+                            lr_1x.append(name)
+                        elif ("time_decay" in name) or ("att.w0" in name):
+                            lr_2x.append(name)
+                        elif "time_first" in name:
+                            lr_3x.append(name)
+                        else:
+                            lr_1x.append(name)
+                
+                param_dict = {n: p for n, p in self.named_parameters()}
+                optim_groups = [
+                    {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "lr": self.mad_config.lr}
+                ]
+                
+                if len(lr_2x) > 0 and hasattr(self.mad_config, 'layerwise_lr') and self.mad_config.layerwise_lr > 0:
+                    optim_groups.append(
+                        {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "lr": 2.0 * self.mad_config.lr}
+                    )
+                
+                if len(lr_3x) > 0 and hasattr(self.mad_config, 'layerwise_lr') and self.mad_config.layerwise_lr > 0:
+                    optim_groups.append(
+                        {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "lr": 3.0 * self.mad_config.lr}
+                    )
+                
+                if len(lr_decay) > 0 and self.mad_config.weight_decay > 0:
+                    optim_groups.append(
+                        {"params": [param_dict[n] for n in lr_decay],
+                         "weight_decay": self.mad_config.weight_decay,
+                         "lr": self.mad_config.lr}
+                    )
+                
+                optimizer = torch.optim.AdamW(
+                    optim_groups,
+                    lr=self.mad_config.lr,  
+                    betas=(beta1, beta2),  
+                    eps=optimizer_eps,     
+                    weight_decay=0.0,      
+                    amsgrad=False
+                )
+            else:
+                optimizer = torch.optim.AdamW(
+                    self.parameters(),
+                    lr=self.mad_config.lr,
+                    weight_decay=self.mad_config.weight_decay,
+                    betas=(beta1, beta2), 
+                    eps=optimizer_eps     
+                )
         elif self.mad_config.optimizer == 'sgd':
             optimizer = torch.optim.SGD(
                 self.parameters(),

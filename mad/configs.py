@@ -54,6 +54,11 @@ class MADConfig(BaseConfig):
     lr: float = 5e-4
     weight_decay: float = 0.
     optimizer: str = 'adamw'
+    optimizer_eps: float = 1e-18  # RWKV-7 specific
+    use_param_grouping: bool = True  # RWKV-7 specific
+    layerwise_lr: float = 1.0  # RWKV-7 specific
+    beta1: float = 0.9 
+    beta2: float = 0.999
     scheduler: str = 'cosine'
     min_lr: float = 1e-6
     early_stop: bool = False
@@ -62,8 +67,13 @@ class MADConfig(BaseConfig):
     plateau_factor: float = 0.9
     accelerator: str = 'cuda'
     devices: int = 1
-    save_checkpoints: bool = True 
+    save_checkpoints: bool = True
     precision: str = 'bf16'
+    
+    use_deepspeed: bool = False
+    zero_stage: int = 2  # ZeRO stage for DeepSpeed (RWKV-7 uses stage 2)
+    offload_optimizer: bool = False
+    offload_parameters: bool = False
 
     # misc:
     seed: int = 12345

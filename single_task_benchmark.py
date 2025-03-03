@@ -9,7 +9,7 @@ import numpy as np
 import ray.util.multiprocessing as mp
 
 from train import train
-from mad.registry import layer_registry, model_registry
+from mad.registry import layer_registry, model_registry, task_registry
 from mad.configs import MADConfig, make_benchmark_mad_configs
 from mad.paths import make_log_path, get_base_path
 from mad.analysis import compute_model_mad_scores
@@ -21,6 +21,9 @@ def get_args():
     # model settings:
     parser.add_argument('--layers', nargs='+', default=['mh-attention', 'swiglu', 'mh-attention', 'swiglu'], help='layers to use in the model')
     parser.add_argument('--dim', type=int, default=128, help='width of model (applied to all layers)')
+    
+    # task selection:
+    parser.add_argument('--task', type=str, default='compression', choices=list(task_registry.keys()), help='specific task to benchmark')
     
     # training settings:
     parser.add_argument('--gpus', type=int, default=1, help='number of gpus to use for training')
@@ -54,9 +57,15 @@ def check_benchmark_data_present(mad_configs):
         assert os.path.isdir(mad_config.test_dataset_path)
 
 
+def filter_configs_by_task(mad_configs, task):
+    """Filter MAD configurations to only include those for a specific task."""
+    return [config for config in mad_configs if config.task == task]
+
+
 def benchmark(
     make_model_fn: tp.Callable,
     model_id: str,
+    task: str = 'compression',
     gpus: int = 1,
     cpus: int = 12,
     num_trials_gpu: int = 1,
@@ -72,12 +81,12 @@ def benchmark(
     ray_tmp_path: str = '/tmp/ray'
 ):
     """
-    Benchmark a model on MAD.
+    Benchmark a model on a specific MAD task.
     
     Args:
         make_model_fn (callable): function that returns a PyTorch model
         model_id (str): unique identifier for the model
-        mad_configs (list): list of MADConfig objects
+        task (str): specific MAD task to benchmark
         gpus (int): number of gpus to use for training
         cpus (int): number of cpus to use for training
         num_trials_gpu (int): number of trials to run per gpu
@@ -94,11 +103,18 @@ def benchmark(
     """
 
     # create all MAD configs for benchmark:
-    mad_configs = make_benchmark_mad_configs(
+    all_mad_configs = make_benchmark_mad_configs(
         data_path=data_path,
         precision=precision,
         persistent_workers=persistent_workers
     )
+    
+    # Filter configs to only include the specified task
+    mad_configs = filter_configs_by_task(all_mad_configs, task)
+    
+    if not mad_configs:
+        raise ValueError(f"No configurations found for task '{task}'. Valid tasks are: {list(task_registry.keys())}")
+    
     check_benchmark_data_present(mad_configs)
 
     def setup_model_and_train(mad_config):
@@ -150,22 +166,20 @@ def benchmark(
         logs_path=logs_path
     )
     print('\n----')
-    print('MAD scores for each synthetic task:')
-    for task, score in zip(mad_scores.index, mad_scores.values):
-        print(f'  {task}: {score}')
-    print(f'Mean across Tasks: {np.mean(mad_scores.values)}')
-
+    print(f'MAD scores for {task}:')
+    for task_name, score in zip(mad_scores.index, mad_scores.values):
+        if task_name == task:
+            print(f'  {task_name}: {score}')
+    
     return mad_scores
 
 
 if __name__ == '__main__':
 
     # get cli args:
-
     args = get_args()
 
     # load layer modules and their configs:
-
     def load_yml(path):
         """Load a yaml file from a given path."""
         with open(path, 'r') as f:
@@ -174,16 +188,14 @@ if __name__ == '__main__':
     layers = [layer_registry[l]['module'] for l in args['layers']]
     layer_configs = []
     for layer in args['layers']:
-            layer_configs.append( load_yml(os.path.join(get_base_path(), layer_registry[layer]['cfg'])) )
+            layer_configs.append(load_yml(os.path.join(get_base_path(), layer_registry[layer]['cfg'])))
    
     # define identifier for model used for logging:
-
     model_id = '-'.join(layer_registry[l]['shorthand'] for l in args['layers'])
 
     # define function to create model during benchmark:
     # (this is necessary because the model's backbone, 
     # vocab size, and max_length change during the benchmark)
-
     def make_model_fn(
         task: str,
         vocab_size: int,
@@ -220,11 +232,11 @@ if __name__ == '__main__':
             max_length=max_length,
         )
     
-    # run benchmark:
-
+    # run benchmark on specified task:
     mad_scores = benchmark(
         make_model_fn=make_model_fn,
         model_id=model_id,
+        task=args['task'],
         gpus=args['gpus'],
         cpus=args['cpus'],
         num_trials_gpu=args['num_trials_gpu'],

@@ -141,6 +141,16 @@ layer_registry = {
         'module': layers.channel_mixer_rwkv6_wrapped,
         'cfg': 'configs/layers/rwkv6-channel-mixer.yml',
         'shorthand': 'R6c'
+    },
+    'rwkv7-time-mixer': {
+        'module': layers.time_mixer_rwkv7_wrapped_bf16,
+        'cfg': 'configs/layers/rwkv7-time-mixer.yml',
+        'shorthand': 'R7t'
+    },
+    'rwkv7-channel-mixer': {
+        'module': layers.channel_mixer_rwkv7_wrapped,
+        'cfg': 'configs/layers/rwkv7-channel-mixer.yml',
+        'shorthand': 'R7c'
     }
 }
 
