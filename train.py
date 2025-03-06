@@ -294,6 +294,11 @@ def train(
     }, index=[0])
     results_df.to_csv(os.path.join(log_path, 'results.csv'), index=False)
 
+    # Properly finish wandb runs
+    if log_to_wandb:
+        import wandb
+        wandb.finish()
+
     # Done!
 
     return results_df
